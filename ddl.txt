@@ -1,0 +1,493 @@
+CREATE OR REPLACE FUNCTION checa_tipo(id_func INT) RETURNS BOOLEAN AS $$
+DECLARE
+BEGIN
+	IF (select tipo from Funcionario where Funcionario.id_funcionario = id_func) = 'medico' THEN
+		RETURN TRUE;
+	END IF;
+	RAISE EXCEPTION 'Este funcionário não é um médico.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION checa_tipos(id_func INT, id_sub INT, sub BOOL) RETURNS BOOLEAN AS $$
+DECLARE
+	tipo1 VARCHAR(50);
+	tipo2 VARCHAR(50);
+BEGIN
+	select tipo into tipo1 from Funcionario where id_funcionario = id_func;
+	select tipo into tipo2 from Funcionario where id_funcionario = id_sub;
+	IF id_sub IS NULL AND sub is TRUE THEN
+		RAISE EXCEPTION 'Substituto não informado.';
+	ELSIF id_sub IS NULL THEN
+		RETURN TRUE;
+	END IF;
+	IF id_func = id_sub THEN
+		RAISE EXCEPTION 'Os ids dos funcionários são iguais.';
+	ELSIF tipo1 NOT IN ('medico', 'enfermeiro') THEN
+		RAISE EXCEPTION 'Um ou mais funcionários não são médicos ou enfermeiros, portanto não pode haver substituição.';
+	ELSIF tipo1 = tipo2 THEN
+		RETURN TRUE;
+	END IF;
+	RAISE EXCEPTION 'Não é uma substituição válida.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION checa_nome(nome VARCHAR(50), tipo_ala VARCHAR(50)) RETURNS BOOLEAN AS $$
+DECLARE
+BEGIN
+	IF (tipo_ala = 'internacao' AND nome IS NULL) THEN
+		RAISE EXCEPTION 'Salas de internação devem ter nome.';
+	END IF;
+	RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION checa_andar(andar_sala INT, ala INT) RETURNS BOOLEAN AS $$
+DECLARE
+BEGIN
+	IF (select andar from Sala_operacao where id_ala = ala group by andar) IS NULL THEN
+		RETURN TRUE;
+	ELSIF (select andar from Sala_operacao where id_ala = ala group by andar) = andar_sala THEN
+		RETURN TRUE;
+	END IF;
+	RAISE EXCEPTION 'Salas de operação devem estar todas no mesmo andar.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION checar_susconv(convenio VARCHAR(30), sus VARCHAR(30)) RETURNS BOOLEAN AS $$
+DECLARE
+BEGIN
+	IF (convenio IS NULL AND sus IS NULL) THEN
+		RAISE EXCEPTION 'O numero do SUS ou do convenio deve ser informado.';
+	END IF;
+	RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION eh_coberto(exame INT, CNPJ VARCHAR(25)) RETURNS BOOLEAN AS $$
+DECLARE
+BEGIN
+	IF (select count(id_exame) from Cobertura where id_exame = exame and CNPJ_lab = CNPJ) > 0 THEN
+		RETURN TRUE;
+	END IF;
+	RAISE EXCEPTION 'O exame não é coberto por esse laboratório.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TABLE Hospital (
+	id_hospital INT PRIMARY KEY,
+	nome VARCHAR(25)
+);
+
+CREATE TABLE Laboratorio (
+	CNPJ VARCHAR(50) PRIMARY KEY,
+	nome VARCHAR(50) NOT NULL,
+	endereco VARCHAR(50) NOT NULL,
+	telefone VARCHAR(25) NOT NULL,
+	expiracao DATE NOT NULL
+);
+
+CREATE TABLE Holding (
+	id_hospital INT,
+	FOREIGN KEY (id_hospital) REFERENCES Hospital (id_hospital),
+	CNPJ_lab VARCHAR(50),
+	FOREIGN KEY (CNPJ_lab) REFERENCES Laboratorio (CNPJ)
+);	
+
+CREATE TABLE Funcionario (
+	id_funcionario INT PRIMARY KEY,
+	id_hospital INT,
+	FOREIGN KEY (id_hospital) REFERENCES Hospital (id_hospital),
+	nome VARCHAR(50) NOT NULL,
+	endereco VARCHAR(50) NOT NULL,
+	contratacao DATE NOT NULL,
+	tipo VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE Telefones (
+	id_funcionario INT,
+	FOREIGN KEY (id_funcionario) REFERENCES Funcionario (id_funcionario),
+	telefone VARCHAR(25) NOT NULL
+);
+
+CREATE TABLE Medicos (
+	CRM VARCHAR(25) PRIMARY KEY,
+	id_funcionario INT
+		CONSTRAINT eh_medico CHECK (checa_tipo(id_funcionario) is TRUE),
+	FOREIGN KEY (id_funcionario) REFERENCES Funcionario (id_funcionario),
+	especialidade VARCHAR(25) NOT NULL
+);
+
+CREATE TABLE Ala (
+	id_ala INT PRIMARY KEY,
+	id_hospital INT,
+	FOREIGN KEY (id_hospital) REFERENCES Hospital (id_hospital),
+	tipo_ala VARCHAR(50) NOT NULL 
+		CONSTRAINT alas CHECK (tipo_ala IN ('internacao', 'consulta', 'operacao')),
+	nome VARCHAR(50) 
+		CONSTRAINT nome_internacao CHECK (checa_nome(nome, tipo_ala) is TRUE)
+);
+
+CREATE TABLE Historico (
+	id_funcionario INT,
+	FOREIGN KEY (id_funcionario) REFERENCES Funcionario (id_funcionario),
+	id_ala INT,
+	FOREIGN KEY (id_ala) REFERENCES Ala (id_ala),
+	dia DATE NOT NULL,
+	horario TIME NOT NULL,
+	substituicao BOOL,
+	id_substituicao INT
+		CONSTRAINT valida_sub CHECK (checa_tipos(id_funcionario, id_substituicao, substituicao) is TRUE),
+	FOREIGN KEY (id_funcionario) REFERENCES Funcionario (id_funcionario)
+);
+
+CREATE TABLE Sala_operacao (
+	id_sala INT PRIMARY KEY,
+	id_ala INT,
+	FOREIGN KEY (id_ala) REFERENCES Ala (id_ala),
+	especialidade VARCHAR(50) NOT NULL,
+	andar INT NOT NULL 
+		CONSTRAINT msm_andar CHECK (checa_andar(andar, id_ala) is TRUE)
+);
+
+CREATE TABLE Sala_internacao (
+	id_leito INT PRIMARY KEY,
+	id_ala INT,
+	FOREIGN KEY (id_ala) REFERENCES Ala (id_ala),
+	andar INT NOT NULL
+);
+
+CREATE TABLE Consultorio (
+	id_consultorio INT PRIMARY KEY,
+	id_ala INT,
+	FOREIGN KEY (id_ala) REFERENCES Ala (id_ala),
+	disponibilidade BOOL NOT NULL,
+	andar INT NOT NULL
+);
+
+CREATE TABLE Paciente (
+	id_paciente INT PRIMARY KEY,
+	nome VARCHAR(50) NOT NULL,
+	nascimento DATE NOT NULL,
+	genero VARCHAR(10) NOT NULL
+		CONSTRAINT checa_genero CHECK (genero IN ('masculino', 'feminino')),
+	endereco VARCHAR(50) NOT NULL,
+	convenio VARCHAR(30),
+	sus VARCHAR(30)
+		CONSTRAINT sus_conv CHECK (checar_susconv(convenio, sus) is TRUE)
+);
+
+CREATE TABLE Consulta (
+	id_consulta INT PRIMARY KEY,
+	CRM VARCHAR(25),
+	FOREIGN KEY (CRM) REFERENCES Medicos (CRM),
+	id_paciente INT,
+	FOREIGN KEY (id_paciente) REFERENCES Paciente (id_paciente),
+	id_consultorio INT,
+	FOREIGN KEY (id_consultorio) REFERENCES Consultorio (id_consultorio),
+	tipo_consulta VARCHAR(50) NOT NULL
+		CONSTRAINT tipo CHECK (tipo_consulta IN ('primeira', 'retorno')) 
+);
+
+CREATE TABLE  Diagnostico (
+	id_consulta INT,
+	FOREIGN KEY (id_consulta) REFERENCES Consulta (id_consulta),
+	dia DATE NOT NULL,
+	hora TIME NOT NULL,
+	tipo VARCHAR(255) NOT NULL,
+	precaucoes VARCHAR(255),
+	complicacoes VARCHAR(255)
+);
+
+CREATE TABLE Exame (
+	id_exame INT PRIMARY KEY,
+	nome VARCHAR(25),
+	preparacao VARCHAR(255) NOT NULL
+);
+
+CREATE TABLE Exames_laboratoriais (
+	id_consulta INT,
+	FOREIGN KEY (id_consulta) REFERENCES Consulta (id_consulta),
+	id_exame INT,
+	FOREIGN KEY (id_exame) REFERENCES Exame (id_exame)
+);
+
+CREATE TABLE Agendamento_exame (
+	id_agendamento INT PRIMARY KEY,
+	id_exame INT,
+	FOREIGN KEY (id_exame) REFERENCES Exame (id_exame),
+	CNPJ_lab VARCHAR(50)
+		CONSTRAINT coberturas CHECK (eh_coberto(id_exame, CNPJ_lab) is TRUE),
+	FOREIGN KEY (CNPJ_lab) REFERENCES Laboratorio (CNPJ),
+	id_consulta INT,
+	FOREIGN KEY (id_consulta) REFERENCES Consulta (id_consulta),
+	dia DATE NOT NULL,
+	hora TIME NOT NULL
+);
+
+CREATE TABLE Resultado (
+	id_agendamento INT,
+	FOREIGN KEY (id_agendamento) REFERENCES Agendamento_exame (id_agendamento),
+	id_consulta INT,
+	FOREIGN KEY (id_consulta) REFERENCES Consulta (id_consulta),
+	descricao VARCHAR(255) NOT NULL,
+	tipo VARCHAR(25) NOT NULL,
+	descritivo VARCHAR(255) NOT NULL
+);
+
+CREATE TABLE Solicitacao_internacao (
+	id_solicitacao INT PRIMARY KEY,
+	id_consulta INT,
+	FOREIGN KEY (id_consulta) REFERENCES Consulta (id_consulta),
+	motivo VARCHAR(255) NOT NULL,
+	cirurgia VARCHAR(25) NOT NULL
+);
+
+CREATE TABLE Agenda_internacao (
+	id_solicitacao INT,
+	FOREIGN KEY (id_solicitacao) REFERENCES Solicitacao_internacao (id_solicitacao),
+	id_leito INT,
+	FOREIGN KEY (id_leito) REFERENCES Sala_internacao (id_leito),
+	dia DATE NOT NULL,
+	hora TIME NOT NULL
+);
+
+CREATE TABLE Cobertura (
+	CNPJ_lab VARCHAR(50),
+	FOREIGN KEY (CNPJ_lab) REFERENCES Laboratorio (CNPJ),
+	id_exame INT,
+	FOREIGN KEY (id_exame) REFERENCES Exame (id_exame),
+	valor MONEY
+);
+
+INSERT INTO Hospital (id_hospital, nome) 
+VALUES 
+	(1, 'Lagoas Brancas'),
+	(2, 'Cisne Azul'),
+	(3, 'Aguas claras'),
+	(4, 'São Joaquim'),
+	(5, 'São Vicente');
+
+INSERT INTO Laboratorio (CNPJ, nome, endereco, telefone, expiracao)
+VALUES
+	('69.637.949/0001-01', 'Denbonde', 'Rua Madre Teresa, 222', '(11) 3886-5330', '02/12/2025'),
+	('34.751.307/0001-46', 'Ventrano', 'Avenida Goiás, 2312', '(11) 2162-5270', '05/10/2026'),
+	('25.249.081/0001-99', 'Saudoso', 'Avenida do Estado, 330', '(84) 3549-6442', '20/01/2022');
+	
+INSERT INTO Funcionario (id_funcionario, id_hospital, nome, endereco, contratacao, tipo)
+VALUES
+	(610, 3, 'Claúdio Kaleb', 'Rua Lausinete Maria, 230', '05/01/2018', 'medico'),
+	(404, 1, 'Marcos Mateus', 'Rua Albano Schimit, 31', '25/10/2015', 'enfermeiro'),
+	(318, 2, 'Laia Viana', 'Rua José da Costa, 30', '12/01/2015', 'manutenção'),
+	(435, 5, 'Elias Almeida', 'Rua João Paulo II, 73', '26/12/2010', 'medico'),
+	(714, 4, 'Luciana Silveira', 'Avenida Senhor dos Passos, 1002', '06/02/2018', 'enfermeiro'),
+	(887, 1, 'Brian Moura', 'Praça Três Poderes, 22', '15/07/2017', 'enfermeiro'),
+	(618, 1, 'Giovana Santos', 'Rua Evaldo Klabund, 99', '15/07/2017', 'técnico'),
+	(809, 2, 'Cezár Gomez', 'Rua Tiradentes, 321', '22/08/2013', 'medico'),
+	(567, 3, 'Rita Barros', 'Rua São João, 45', '22/04/2014', 'zelador'),
+	(135, 5, 'José Marcelo', 'Avenida Aclimação, 121', '30/01/2008', 'diretor');
+	
+INSERT INTO Telefones (id_funcionario, telefone)
+VALUES
+	(610, '(11) 3122-3150'),
+	(610, '(11) 3318-1824'),
+	(135, '(11) 2611-7635'),
+	(135, '(11) 3851-6733'),
+	(404, '(11) 3140-4555'),
+	(318, '(11) 2607-2182'),
+	(435, '(11) 2447-1380'),
+	(714, '(11) 2229-5517'),
+	(887, '(11) 3365-7457'),
+	(618, '(11) 2155-5948'),
+	(809, '(11) 2631-4416'),
+	(567, '(11) 2564-6472'),
+	(610, '(11) 2425-9520'),
+	(135, '(11) 3422-3660'),
+	(435, '(11) 3156-3222'),
+	(809, '(11) 4122-3780');
+	
+INSERT INTO Medicos (CRM, id_funcionario, especialidade)
+VALUES
+	('2724536-2/BR', 610, 'cardíaca'),
+	('5468695-1/BR', 435, 'ortopedia'),
+	('4665299-9/BR', 809, 'pediatria');
+	
+INSERT INTO Ala (id_ala, id_hospital, tipo_ala, nome)
+VALUES
+	(10, 1, 'internacao', 'UTI 1 - nível 1'),
+	(11, 1, 'operacao', 'OPS 1 - nível 1'),
+	(13, 1, 'consulta', NULL),
+	(15, 1, 'consulta', NULL),
+	(16, 1, 'consulta', NULL),
+	(22, 2, 'internacao', 'UTI 2 - nível 1' ),
+	(24, 2, 'operacao', 'OPS 2 - nível 1'),
+	(27, 2, 'consulta', 'CONSULTAS 1'),
+	(30, 3, 'internacao', 'UTI 1 - nível 2'),
+	(33, 3, 'operacao', NULL),
+	(40, 4, 'internacao', 'UTI 1 - nível 3'),
+	(55, 4, 'operacao', NULL),
+	(62, 4, 'consulta', 'CONSULTAS 2'),
+	(63, 5, 'operacao', NULL),
+	(67, 5, 'internacao', 'UTI 2 - nível 2');
+	
+INSERT INTO Historico (id_funcionario, id_ala, dia, horario, substituicao, id_substituicao)
+VALUES
+	(610, 40, '26/10/2021', '08:05:30', FALSE, NULL),
+	(404, 33, '07/09/2021', '09:20:55', FALSE, NULL),
+	(610, 62, '13/09/2021', '10:00:22', TRUE, 435),
+	(714, 67, '11/11/2021', '08:30:50', FALSE, NULL),
+	(435, 27, '17/11/2021', '07:55:33', TRUE, 809),
+	(809, 13, '09/10/2021', '08:09:10', FALSE, NULL),
+	(887, 15, '23/11/2021', '10:15:25', FALSE, NULL),
+	(809, 16, '07/09/2021', '08:05:05', TRUE, 610),
+	(404, 10, '20/10/2021', '07:45:37', FALSE, NULL),
+	(435, 24, '09/10/2021', '09:00:50', FALSE, NULL);
+	
+INSERT INTO Sala_operacao (id_sala, id_ala, especialidade, andar)
+VALUES
+	(5001, 11, 'cardiovascular', 5),
+	(3003, 24, 'geral', 3),
+	(6005, 33, 'plástica estética', 6),
+	(4002, 55, 'ginecológica', 4),
+	(2001, 63, 'mastologia', 2),
+	(6010, 33, 'plástica reparadora', 6),
+	(2003, 63, 'neurocirurgia', 2),
+	(2005, 63, 'ortopédica', 2),
+	(3007, 24, 'vascular', 3);
+
+INSERT INTO Sala_internacao (id_leito, id_ala, andar)
+VALUES
+	(3018, 10, 3),
+	(5025, 22, 5),
+	(5014, 30, 4),
+	(6013, 40, 6),
+	(7012, 67, 7),
+	(6009, 10, 6),
+	(5012, 30, 5),
+	(3017, 40, 3);
+	
+INSERT INTO Consultorio (id_consultorio, id_ala, disponibilidade, andar)
+VALUES
+	(1002, 13, TRUE, 1),
+	(2002, 15, TRUE, 2),
+	(1003, 16, TRUE, 1),
+	(1001, 27, TRUE, 1),
+	(2003, 62, FALSE, 2),
+	(1005, 13, FALSE, 1),
+	(2005, 15, TRUE, 2),
+	(1004, 16, TRUE, 1),
+	(1007, 15, FALSE, 1),
+	(2006, 27, FALSE, 2);
+	
+INSERT INTO Paciente (id_paciente, nome, nascimento, genero, endereco, convenio, sus)
+VALUES
+	(382, 'Tereza Nascimento', '22/06/1985', 'feminino', 'Rua Cícero Correa, 290', '824 2858 8266 0005', NULL),
+	(484, 'Edézio Vale', '20/09/1984', 'masculino', 'Rua Brasília, 44', '781 5369 5440 0005', '210 0092 2585 0018'),
+	(775, 'Paulo Nante', '13/04/1954', 'masculino', 'Rua das Ingas, 92', NULL, '289 0189 5644 0004'),
+	(742, 'Lucélia Lopez', '24/05/1952', 'feminino', 'Rua Teresa Carabina, 662', '287 7890 2349 0004', NULL),
+	(935, 'Fernando Ventre', '30/08/2001', 'masculino', 'Rua Joaquim Norberto de Brito, 390', NULL, '130 6105 0796 0001'),
+	(128, 'Adélia Santos', '12/12/1944', 'feminino', 'Avenida Palmares, 118', '162 9345 3574 0001', '191 8364 4836 0002');
+	
+INSERT INTO Consulta (id_consulta, CRM, id_paciente, id_consultorio, tipo_consulta)
+VALUES
+	(1, '2724536-2/BR', 382, 1002, 'primeira'),
+	(2, '5468695-1/BR', 484, 2002, 'primeira'),
+	(3, '4665299-9/BR', 382, 1003, 'retorno'),
+	(4, '5468695-1/BR', 935, 1001, 'primeira'),
+	(5, '2724536-2/BR', 128, 2005, 'primeira'),
+	(6, '4665299-9/BR', 484, 1004, 'retorno');
+	
+INSERT INTO Diagnostico (id_consulta, dia, hora, tipo, precaucoes, complicacoes)
+VALUES
+	(1, '27/11/2021', '14:22:30', 'clínico', NULL, NULL),
+	(2, '28/11/2021', '17:32:20', 'topográfico', 'evitar exercícios', 'dores na perna esquerda'),
+	(3, '29/11/2021', '19:25:04', 'etiológico', NULL, 'fortes dores no peito'),
+	(4, '30/11/2021', '10:05:50', 'patológico', 'evitar alimentos estragados', NULL),
+	(5, '01/12/2021', '09:45:10', 'clínico', NULL, NULL),
+	(6, '05/12/2021', '13:30:22', 'patológico', 'manter a alimentação saudável', 'dores no estômago');
+	
+INSERT INTO Exame (id_exame, nome, preparacao)
+VALUES
+	(9901, 'Ressonância', '2 horas de jejum (incluindo água), remover objetos metálicos'),
+	(9902, 'Endoscopia', '8 horas de jejum'),
+	(9903, 'Hemograma', '3 horas de jejum'),
+	(9904, 'Tomografia', '6 horas de jejum (beber muita água)'),
+	(9905, 'Radiografia', 'remover objetos metálicos');
+	
+INSERT INTO Exames_laboratoriais (id_consulta, id_exame)
+VALUES
+	(2, 9905),
+	(4, 9902),
+	(5, 9903);
+	
+INSERT INTO Cobertura (CNPJ_lab, id_exame, valor)
+VALUES
+	('69.637.949/0001-01', 9903, 'R$65,00'),
+	('69.637.949/0001-01', 9904, 'R$450,00'),
+	('69.637.949/0001-01', 9902, 'R$190,00'),
+	('34.751.307/0001-46', 9901, 'R$1500,00'),
+	('34.751.307/0001-46', 9903, 'R$70,00'),
+	('34.751.307/0001-46', 9905, 'R$95,00'),
+	('34.751.307/0001-46', 9902, 'R$200,00'),
+	('25.249.081/0001-99', 9903, 'R$64,00'),
+	('25.249.081/0001-99', 9904, 'R$460,00'),
+	('25.249.081/0001-99', 9905, 'R$100,00');
+	
+INSERT INTO Agendamento_exame (id_agendamento, id_exame, CNPJ_lab, id_consulta, dia, hora)
+VALUES
+	(1, 9905, '25.249.081/0001-99', 2, '05/12/2021', '13:00:00'),
+	(2, 9902, '69.637.949/0001-01', 4, '12/12/2021', '15:00:00'),
+	(3, 9903, '34.751.307/0001-46', 5, '15/12/2021', '08:30:00');
+	
+INSERT INTO Resultado (id_agendamento, id_consulta, descricao, tipo, descritivo)
+VALUES
+	(1, 2, 'bons resultados', 'benigno', 'apenas uma leve inflamação'),
+	(2, 4, 'resultados precupantes', 'a definir', 'possivel desgaste no intestino'),
+	(3, 5, 'bons resultados', 'nada encontrado', 'diagnostico nao indicou nenhum problema');
+	
+INSERT INTO Solicitacao_internacao (id_solicitacao, id_consulta, motivo, cirurgia)
+VALUES
+	(1, 3, 'problemas no pulmao', 'remocao da agua do pulmao'),
+	(2, 6, 'cancer estomacal', 'remocao do tumor');
+
+INSERT INTO Agenda_internacao (id_solicitacao, id_leito, dia, hora)
+VALUES
+	(1, 5025, '18/12/2021', '16:30:00'),
+	(2, 6009, '20/12/2021', '08:00:00');
+	
+--QUESTAO 1
+--Quais exames laboratoriais cobertos pelo laboratorio L nao foram requeridos nos ultimos 30 dias?
+--Exemplo laboratório 'Denbonde', CNPJ: '69.637.949/0001-01'
+--Usando o nome do laboratório L:
+select id_exame from Cobertura where CNPJ_lab = 
+(select CNPJ from Laboratorio where nome = 'Denbonde') AND id_exame not in
+(select id_exame from Exames_laboratoriais where id_consulta in 
+(select id_consulta from Diagnostico where dia between date('02-12-2021') - 30 and date('02-12-2021')));
+--Usando CNPJ do laboratório L:
+select id_exame from Cobertura where CNPJ_lab = '69.637.949/0001-01' AND id_exame not in
+(select id_exame from Exames_laboratoriais where id_consulta in 
+(select id_consulta from Diagnostico where dia between date('02-12-2021') - 30 and date('02-12-2021')));
+
+--QUESTAO 2
+--Quais sao as primeiras consultas e as consultas de retorno de certo paciente X?
+--Exemplo paciente 'Tereza Nascimento', id: 382
+--Usando nome do Paciente X:
+select * from Consulta where id_paciente = (select id_paciente from Paciente where nome = 'Tereza Nascimento');
+--Usando id do Paciente X:
+select * from Consulta where id_paciente = 382;
+
+--QUESTAO 3
+--Quais foram as solicitacoes de internacao que ainda NAO foram agendadas?
+select * from Solicitacao_internacao where id_consulta not in (select id_consulta from Agenda_internacao);
+
+--QUESTAO 4
+--Quais foram os dias e perıodos de trabalho do enfermeiro A na ala Z? 
+--Em algum desses dias e perıodos o enfermeiro A foi substituıdo por outro funcionario? Quem foi?
+--Exemplo funcionario 'Marcos Mateus', id: 404
+--Usando nome do enfermeiro A:
+select dia, horario, substituicao, id_substituicao from Historico where id_funcionario = (select id_funcionario from Funcionario where nome = 'Marcos Mateus');
+--Usando id do enfermeiro A:
+select dia, horario, substituicao, id_substituicao from Historico where id_funcionario = 404;
+
+--QUESTAO 5
+--Existem salas de cirurgia no 6 ou 9 andares?
+select * from Sala_operacao where andar = 6 OR andar = 9;
